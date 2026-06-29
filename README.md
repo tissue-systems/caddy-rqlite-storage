@@ -68,3 +68,7 @@ The core tests run the exact SQL the store emits against an in-memory SQLite, co
 round-trips (incl. binary), not-found semantics, listing (recursive / non-recursive / `LIKE`-escaping),
 the lock primitives (acquire / steal-after-expiry / refresh / release / token-ownership), an
 N-goroutine **mutual-exclusion** contention test, and the rqlite HTTP wire format end-to-end.
+
+## License
+
+[MIT](LICENSE)
