@@ -95,8 +95,27 @@ func TestHTTPConnQuery(t *testing.T) {
 	if len(rows) != 1 || rows[0][0] != "aGVsbG8=" {
 		t.Fatalf("rows: %v", rows)
 	}
-	if !strings.Contains(f.lastPath, "/db/query") || !strings.Contains(f.lastPath, "level=none") {
-		t.Fatalf("path: %s", f.lastPath)
+	if !strings.Contains(f.lastPath, "/db/query") || !strings.Contains(f.lastPath, "level=weak") {
+		t.Fatalf("path: %s", f.lastPath) // default read level is weak (see setReadLevel)
+	}
+}
+
+func TestHTTPConnReadLevel(t *testing.T) {
+	f := newFakeRqlite(t)
+	f.queryResp = `{"results":[{"columns":["value"],"types":["text"],"values":[["x"]]}]}`
+	c := newHTTPConn(f.srv.URL, "", "")
+
+	if err := c.setReadLevel("bogus"); err == nil {
+		t.Fatal("setReadLevel(bogus): want error, got nil")
+	}
+	if err := c.setReadLevel("none"); err != nil {
+		t.Fatalf("setReadLevel(none): %v", err)
+	}
+	if _, _, err := c.Query(context.Background(), Statement{SQL: "SELECT 1"}); err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	if !strings.Contains(f.lastPath, "level=none") {
+		t.Fatalf("path after setReadLevel(none): %s", f.lastPath)
 	}
 }
 
