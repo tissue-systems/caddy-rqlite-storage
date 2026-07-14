@@ -18,12 +18,12 @@ func (s *Store) SetLockTTL(d time.Duration) {
 }
 
 // SetReadLevel sets the rqlite read-consistency level used for key lookups:
-// "none" (default), "weak", "linearizable", or "strong". The default reads the
-// local node's FSM, which can lag the leader right after a write forwarded from
-// a follower — CertMagic's write-then-read storage preflight fails on that lag
-// whenever the local node is not the Raft leader, aborting certificate obtains.
-// Use "weak" on multi-node clusters: reads route through the leader, so the
-// store always sees its own writes, at the cost of one intra-cluster hop.
+// "weak" (default), "none", "linearizable", or "strong". "weak" routes reads
+// through the Raft leader, so the store always sees its own writes. "none"
+// reads the local node's FSM — faster, but on a multi-node cluster a
+// non-leader node can lag right after a write forwarded from it, which fails
+// CertMagic's write-then-read storage preflight and aborts certificate
+// obtains; only use "none" on single-node deployments.
 // No-op (returns nil) when the Store is not backed by the rqlite HTTP transport.
 func (s *Store) SetReadLevel(level string) error {
 	if h, ok := s.conn.(*httpConn); ok {

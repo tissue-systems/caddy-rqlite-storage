@@ -42,10 +42,10 @@ type RqliteStorage struct {
 	Password string `json:"password,omitempty"`
 	// LockTTL is how long an acquired ACME lock is held before it may be stolen.
 	LockTTL caddy.Duration `json:"lock_ttl,omitempty"`
-	// ReadLevel is the rqlite read-consistency level for key lookups: "none"
-	// (default; fast local reads), "weak", "linearizable", or "strong". Use
-	// "weak" on multi-node clusters so the write-then-read storage check never
-	// races follower replication when this node is not the Raft leader.
+	// ReadLevel is the rqlite read-consistency level for key lookups: "weak"
+	// (default; leader-routed, always sees its own writes), "none" (fast local
+	// reads — single-node only: on a cluster a non-leader's stale read fails
+	// CertMagic's storage preflight), "linearizable", or "strong".
 	ReadLevel string `json:"read_level,omitempty"`
 
 	store *rqlitestorage.Store

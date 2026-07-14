@@ -13,8 +13,11 @@ import (
 
 // httpConn is the production conn: it speaks rqlite's HTTP data API
 // (POST /db/execute, POST /db/query). Writes go through Raft (consistent);
-// reads use the configured consistency level (default "none" — fast local reads,
-// fine for cert/lock-state lookups since lock *acquisition* is a write).
+// reads use the configured consistency level. The default is "weak"
+// (leader-routed): with "none", a non-leader node can miss its own
+// just-forwarded write (follower FSM lag), which fails CertMagic's
+// write-then-read storage preflight and silently aborts cert obtains.
+// "none" remains available as an explicit opt-in for single-node setups.
 type httpConn struct {
 	client    *http.Client
 	baseURL   string
@@ -33,7 +36,7 @@ func newHTTPConn(baseURL, username, password string) *httpConn {
 		baseURL:   strings.TrimRight(baseURL, "/"),
 		username:  username,
 		password:  password,
-		readLevel: "none",
+		readLevel: "weak",
 	}
 }
 
