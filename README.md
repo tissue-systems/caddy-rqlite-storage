@@ -42,12 +42,18 @@ xcaddy build \
         username {$RQLITE_USER}           # optional HTTP basic-auth
         password {$RQLITE_PASSWORD}
         lock_ttl 60s                      # how long a held ACME lock survives before it may be stolen
+        read_level weak                   # rqlite read consistency: none (default) | weak | linearizable | strong
     }
 }
 ```
 
 Each instance points at its **local** rqlite node; Raft replication makes the store identical everywhere.
-Cert/key lookups use `level=none` reads (fast, local); lock acquisition is a leader write (consistent).
+Lock acquisition is always a leader write (consistent). Cert/key lookups default to `level=none` reads
+(fast, local) — but on a multi-node cluster set **`read_level weak`**: with `none`, a node that is not the
+Raft leader can read its own just-forwarded write back as *missing* (follower FSM lag), which fails
+CertMagic's write-then-read storage preflight and aborts certificate obtains with
+`failed storage check: file does not exist`. `weak` routes reads through the leader, so the store always
+sees its own writes at the cost of one intra-cluster hop.
 
 ## Schema
 

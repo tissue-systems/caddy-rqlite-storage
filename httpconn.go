@@ -37,6 +37,19 @@ func newHTTPConn(baseURL, username, password string) *httpConn {
 	}
 }
 
+// validReadLevels are the rqlite read-consistency levels accepted by setReadLevel.
+var validReadLevels = map[string]bool{
+	"none": true, "weak": true, "linearizable": true, "strong": true,
+}
+
+func (h *httpConn) setReadLevel(level string) error {
+	if !validReadLevels[level] {
+		return fmt.Errorf("invalid rqlite read level %q (want none, weak, linearizable, or strong)", level)
+	}
+	h.readLevel = level
+	return nil
+}
+
 type rqliteResponse struct {
 	Results []rqliteResult `json:"results"`
 }

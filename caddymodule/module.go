@@ -42,6 +42,11 @@ type RqliteStorage struct {
 	Password string `json:"password,omitempty"`
 	// LockTTL is how long an acquired ACME lock is held before it may be stolen.
 	LockTTL caddy.Duration `json:"lock_ttl,omitempty"`
+	// ReadLevel is the rqlite read-consistency level for key lookups: "none"
+	// (default; fast local reads), "weak", "linearizable", or "strong". Use
+	// "weak" on multi-node clusters so the write-then-read storage check never
+	// races follower replication when this node is not the Raft leader.
+	ReadLevel string `json:"read_level,omitempty"`
 
 	store *rqlitestorage.Store
 }
@@ -64,6 +69,11 @@ func (s *RqliteStorage) Provision(ctx caddy.Context) error {
 	st := rqlitestorage.NewHTTPStore(url, repl.ReplaceAll(s.Username, ""), repl.ReplaceAll(s.Password, ""))
 	if s.LockTTL > 0 {
 		st.SetLockTTL(time.Duration(s.LockTTL))
+	}
+	if lvl := repl.ReplaceAll(s.ReadLevel, ""); lvl != "" {
+		if err := st.SetReadLevel(lvl); err != nil {
+			return fmt.Errorf("rqlite storage: %w", err)
+		}
 	}
 	if err := st.EnsureSchema(ctx); err != nil {
 		return fmt.Errorf("rqlite storage: ensure schema: %w", err)
@@ -110,6 +120,10 @@ func (s *RqliteStorage) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 					return d.Errf("invalid lock_ttl: %v", err)
 				}
 				s.LockTTL = caddy.Duration(dur)
+			case "read_level":
+				if !d.Args(&s.ReadLevel) {
+					return d.ArgErr()
+				}
 			default:
 				return d.Errf("unrecognized rqlite storage option: %s", d.Val())
 			}
