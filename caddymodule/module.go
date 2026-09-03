@@ -47,6 +47,11 @@ type RqliteStorage struct {
 	// reads — single-node only: on a cluster a non-leader's stale read fails
 	// CertMagic's storage preflight), "linearizable", or "strong".
 	ReadLevel string `json:"read_level,omitempty"`
+	// LeaderRetry bounds how long a storage request retries rqlite's 503
+	// "leader not found" (default 10s; 0 disables). A peer reboot costs the
+	// cluster a Raft election, and a renewal or lock landing in that window
+	// would otherwise fail outright.
+	LeaderRetry caddy.Duration `json:"leader_retry,omitempty"`
 
 	store *rqlitestorage.Store
 }
@@ -72,6 +77,14 @@ func (s *RqliteStorage) Provision(ctx caddy.Context) error {
 	}
 	if lvl := repl.ReplaceAll(s.ReadLevel, ""); lvl != "" {
 		if err := st.SetReadLevel(lvl); err != nil {
+			return fmt.Errorf("rqlite storage: %w", err)
+		}
+	}
+	// Explicit 0 is meaningful (retry off), so this is not gated on > 0; the
+	// JSON zero value and an absent field are indistinguishable, and absent
+	// must keep the store's own default.
+	if s.LeaderRetry != 0 {
+		if err := st.SetLeaderRetry(time.Duration(s.LeaderRetry)); err != nil {
 			return fmt.Errorf("rqlite storage: %w", err)
 		}
 	}
@@ -124,6 +137,16 @@ func (s *RqliteStorage) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 				if !d.Args(&s.ReadLevel) {
 					return d.ArgErr()
 				}
+			case "leader_retry":
+				var raw string
+				if !d.Args(&raw) {
+					return d.ArgErr()
+				}
+				dur, err := caddy.ParseDuration(raw)
+				if err != nil {
+					return d.Errf("invalid leader_retry: %v", err)
+				}
+				s.LeaderRetry = caddy.Duration(dur)
 			default:
 				return d.Errf("unrecognized rqlite storage option: %s", d.Val())
 			}

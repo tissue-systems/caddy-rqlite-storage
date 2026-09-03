@@ -17,6 +17,18 @@ func (s *Store) SetLockTTL(d time.Duration) {
 	}
 }
 
+// SetLeaderRetry bounds how long a request retries rqlite's 503 "leader not
+// found" before giving up. A peer reboot costs the cluster a Raft election, and
+// without this a renewal or lock landing in that window fails outright. Zero
+// disables retrying. No-op (returns nil) when the Store is not backed by the
+// rqlite HTTP transport.
+func (s *Store) SetLeaderRetry(d time.Duration) error {
+	if h, ok := s.conn.(*httpConn); ok {
+		return h.setLeaderRetry(d)
+	}
+	return nil
+}
+
 // SetReadLevel sets the rqlite read-consistency level used for key lookups:
 // "weak" (default), "none", "linearizable", or "strong". "weak" routes reads
 // through the Raft leader, so the store always sees its own writes. "none"

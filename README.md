@@ -43,6 +43,7 @@ xcaddy build \
         password {$RQLITE_PASSWORD}
         lock_ttl 60s                      # how long a held ACME lock survives before it may be stolen
         read_level weak                   # rqlite read consistency: weak (default) | none | linearizable | strong
+        leader_retry 10s                  # how long a request retries rqlite's 503 "leader not found" (0 = off)
     }
 }
 ```
@@ -54,6 +55,15 @@ intra-cluster hop). `read_level none` (local FSM reads) is faster but is safe **
 deployments**: on a cluster, a node that is not the leader can read its own just-forwarded write back
 as *missing* (follower FSM lag), which fails CertMagic's write-then-read storage preflight and aborts
 certificate obtains with `failed storage check: file does not exist`.
+
+Rebooting one node costs the cluster a Raft election, during which its peers answer
+`503 leader not found`. A request that lands in that window is retried for **`leader_retry`**
+(default 10s, exponential backoff, cancelled with the context) so a renewal or a lock acquisition
+rides the election out instead of failing. Only 503 is retried: it means the node had no leader to
+apply or forward to, so the statement never entered the Raft log and a replay cannot double-apply it.
+A transport error is never retried, because a write may have been applied with the response lost.
+The budget is bounded on purpose — Caddy loads every managed certificate through this path at
+startup, and an unbounded wait would trade a visible failure for a hung process.
 
 ## Schema
 

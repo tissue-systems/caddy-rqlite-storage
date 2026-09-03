@@ -7,19 +7,26 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // fakeRqlite is a minimal stand-in for rqlite's HTTP data API that records the last
 // request body and returns a canned response per path.
 type fakeRqlite struct {
-	srv         *httptest.Server
-	lastPath    string
-	lastBody    string
-	lastAuthOK  bool
-	execResp    string
-	queryResp   string
-	statusCode  int
+	srv        *httptest.Server
+	lastPath   string
+	lastBody   string
+	lastAuthOK bool
+	execResp   string
+	queryResp  string
+	statusCode int
+	// requests counts every request served. failuresLeft, when positive, makes
+	// that many leading requests answer 503 before the canned response — the
+	// shape of an rqlite node whose cluster is mid-election.
+	requests     atomic.Int64
+	failuresLeft atomic.Int64
 }
 
 func newFakeRqlite(t *testing.T) *fakeRqlite {
@@ -31,6 +38,13 @@ func newFakeRqlite(t *testing.T) *fakeRqlite {
 		f.lastBody = string(b)
 		if u, p, ok := r.BasicAuth(); ok && u == "user" && p == "pass" {
 			f.lastAuthOK = true
+		}
+		f.requests.Add(1)
+		if f.failuresLeft.Load() > 0 {
+			f.failuresLeft.Add(-1)
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte("leader not found"))
+			return
 		}
 		if f.statusCode != http.StatusOK {
 			w.WriteHeader(f.statusCode)
@@ -167,9 +181,107 @@ func TestHTTPConnHTTPError(t *testing.T) {
 	f := newFakeRqlite(t)
 	f.statusCode = http.StatusServiceUnavailable
 	c := newHTTPConn(f.srv.URL, "", "")
+	if err := c.setLeaderRetry(0); err != nil { // retry off: one attempt, error straight out
+		t.Fatal(err)
+	}
 	_, err := c.Exec(context.Background(), Statement{SQL: "x"})
 	if err == nil || !strings.Contains(err.Error(), "503") {
 		t.Fatalf("want HTTP 503 surfaced, got %v", err)
+	}
+	if n := f.requests.Load(); n != 1 {
+		t.Fatalf("leader retry disabled: want 1 request, got %d", n)
+	}
+	if err := c.setLeaderRetry(-time.Second); err == nil {
+		t.Fatal("setLeaderRetry(-1s): want error, got nil")
+	}
+}
+
+// A 503 is rqlite's "leader not found" — the statement never entered the Raft
+// log, so retrying it is safe and is what carries a running caddy across the
+// election a peer reboot triggers.
+func TestHTTPConnRetriesLeaderUnavailable(t *testing.T) {
+	f := newFakeRqlite(t)
+	f.execResp = `{"results":[{"rows_affected":1}]}`
+	f.failuresLeft.Store(2)
+	c := newHTTPConn(f.srv.URL, "", "")
+	if err := c.setLeaderRetry(5 * time.Second); err != nil {
+		t.Fatal(err)
+	}
+	affected, err := c.Exec(context.Background(), Statement{SQL: "INSERT INTO t(a) VALUES(?)", Args: []any{"x"}})
+	if err != nil {
+		t.Fatalf("Exec across an election: %v", err)
+	}
+	if len(affected) != 1 || affected[0] != 1 {
+		t.Fatalf("rows-affected after retry: %v", affected)
+	}
+	if n := f.requests.Load(); n != 3 {
+		t.Fatalf("want 2 failed attempts then a success (3 requests), got %d", n)
+	}
+}
+
+// Only 503 is retryable: every other status means the request would fail the
+// same way again, so it must surface on the first attempt.
+func TestHTTPConnDoesNotRetryOtherStatuses(t *testing.T) {
+	f := newFakeRqlite(t)
+	f.statusCode = http.StatusInternalServerError
+	c := newHTTPConn(f.srv.URL, "", "")
+	if err := c.setLeaderRetry(5 * time.Second); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	if _, err := c.Exec(context.Background(), Statement{SQL: "x"}); err == nil || !strings.Contains(err.Error(), "500") {
+		t.Fatalf("want HTTP 500 surfaced, got %v", err)
+	}
+	if n := f.requests.Load(); n != 1 {
+		t.Fatalf("want 1 request for a non-retryable status, got %d", n)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("non-retryable status waited %s; it must not consume the retry budget", elapsed)
+	}
+}
+
+// The budget is bounded: a cluster with no leader at all must produce an error,
+// not a hung caller.
+func TestHTTPConnLeaderRetryBudgetExpires(t *testing.T) {
+	f := newFakeRqlite(t)
+	f.statusCode = http.StatusServiceUnavailable
+	c := newHTTPConn(f.srv.URL, "", "")
+	if err := c.setLeaderRetry(300 * time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	_, err := c.Exec(context.Background(), Statement{SQL: "x"})
+	elapsed := time.Since(start)
+	if err == nil || !strings.Contains(err.Error(), "503") {
+		t.Fatalf("want HTTP 503 surfaced after the budget, got %v", err)
+	}
+	if elapsed < 300*time.Millisecond {
+		t.Fatalf("gave up after %s, before the 300ms budget", elapsed)
+	}
+	if elapsed > 5*time.Second {
+		t.Fatalf("retried for %s, well past the 300ms budget", elapsed)
+	}
+	if n := f.requests.Load(); n < 2 {
+		t.Fatalf("want more than one attempt within the budget, got %d", n)
+	}
+}
+
+// A cancelled context must cut the retry loop short rather than run the budget out.
+func TestHTTPConnLeaderRetryHonoursContext(t *testing.T) {
+	f := newFakeRqlite(t)
+	f.statusCode = http.StatusServiceUnavailable
+	c := newHTTPConn(f.srv.URL, "", "")
+	if err := c.setLeaderRetry(30 * time.Second); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	if _, err := c.Exec(ctx, Statement{SQL: "x"}); err == nil {
+		t.Fatal("want an error when the context expires mid-retry")
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("ignored context cancellation for %s", elapsed)
 	}
 }
 
