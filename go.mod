@@ -3,7 +3,7 @@ module github.com/tissue-systems/caddy-rqlite-storage
 go 1.26.0
 
 require (
-	github.com/caddyserver/caddy/v2 v2.11.5
+	github.com/caddyserver/caddy/v2 v2.11.9
 	github.com/caddyserver/certmagic v0.25.6
 	modernc.org/sqlite v1.62.0
 )
