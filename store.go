@@ -147,19 +147,32 @@ func (s *Store) Get(ctx context.Context, key string) ([]byte, error) {
 	return base64.StdEncoding.DecodeString(enc)
 }
 
-// Has reports whether key exists.
+// Has reports whether key exists. A failed lookup reports true, matching
+// certmagic's FileStorage: the caller then goes on to Load, which returns the
+// real error, instead of treating an rqlite outage as "no certificate here".
 func (s *Store) Has(ctx context.Context, key string) bool {
 	_, rows, err := s.conn.Query(ctx, Statement{
 		SQL: `SELECT 1 FROM caddy_storage WHERE key = ?`, Args: []any{key},
 	})
-	return err == nil && len(rows) > 0
+	if err != nil {
+		return true
+	}
+	return len(rows) > 0
 }
 
-// Del removes key, or returns ErrNotExist if it was absent.
+// Del removes key and, when key names a directory, every key beneath it
+// ("key/..."), as certmagic.Storage.Delete requires. It's one statement, so
+// rqlite applies it atomically. Returns ErrNotExist if nothing matched. An
+// empty key matches only itself, never the whole store.
 func (s *Store) Del(ctx context.Context, key string) error {
-	affected, err := s.conn.Exec(ctx, Statement{
-		SQL: `DELETE FROM caddy_storage WHERE key = ?`, Args: []any{key},
-	})
+	stmt := Statement{SQL: `DELETE FROM caddy_storage WHERE key = ?`, Args: []any{key}}
+	if key != "" {
+		stmt = Statement{
+			SQL:  `DELETE FROM caddy_storage WHERE key = ? OR key LIKE ? ESCAPE '\'`,
+			Args: []any{key, escapeLike(key) + `/%`},
+		}
+	}
+	affected, err := s.conn.Exec(ctx, stmt)
 	if err != nil {
 		return err
 	}

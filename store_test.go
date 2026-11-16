@@ -218,6 +218,43 @@ func TestDelete(t *testing.T) {
 	}
 }
 
+func TestDeletePrefix(t *testing.T) {
+	s, _, _ := newTestStore(t)
+	ctx := ctxT(t)
+	for _, k := range []string{"certs/a/a.crt", "certs/a/a.key", "certs/ab/ab.crt", "certs_x/y", "other"} {
+		if err := s.Put(ctx, k, []byte("v")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.Del(ctx, "certs/a"); err != nil {
+		t.Fatalf("Del prefix: %v", err)
+	}
+	left, err := s.List(ctx, "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Siblings that merely share a string prefix survive.
+	assertSameSet(t, left, []string{"certs/ab/ab.crt", "certs_x/y", "other"})
+	if err := s.Del(ctx, "certs/a"); !errors.Is(err, ErrNotExist) {
+		t.Fatalf("second Del: want ErrNotExist, got %v", err)
+	}
+	// LIKE metacharacters in the key are literal.
+	if err := s.Del(ctx, "certs%"); !errors.Is(err, ErrNotExist) {
+		t.Fatalf("Del certs%%: want ErrNotExist, got %v", err)
+	}
+	if err := s.Del(ctx, ""); !errors.Is(err, ErrNotExist) {
+		t.Fatalf("Del empty key: want ErrNotExist, got %v", err)
+	}
+}
+
+func TestExistsOnQueryError(t *testing.T) {
+	s, fc, _ := newTestStore(t)
+	fc.failNow = fmt.Errorf("rqlite down")
+	if !s.Has(ctxT(t), "missing") {
+		t.Fatal("Has must report true when the lookup fails, so Load surfaces the error")
+	}
+}
+
 func TestStat(t *testing.T) {
 	s, _, clk := newTestStore(t)
 	ctx := ctxT(t)
